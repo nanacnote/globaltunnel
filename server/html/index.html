@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document</title>
+  </head>
+  <body>
+    <pre>
+      <h2>
+      globaltunnel (a fork of localtunnel)
+      </h2>
+      <span>
+        globaltunnel allows you to easily share a web service on your local 
+        development machine without messing with DNS and firewall settings.
+  
+        globaltunnel will assign you a unique publicly accessible url that 
+        will proxy all requests to your locally running webserver.
+  
+        Start a webserver on some local port (eg http://localhost:8000) 
+        and use the command line interface to request a tunnel to your 
+        local server:
+  
+        <strong>gt --host http://example.tld:1234 --port 9000</strong> 
+  
+        You will receive a url, for example 
+        http://assigned-random-subdomain.example.tld:1234, that you can 
+        share with anyone for as long as your local instance of lt remains 
+        active. Any requests will be routed to your local service at the 
+        specified port
+
+        <a href="http://github.com/nanacnote">maintainer</a>
+      </span>
+    </pre>
+  </body>
+</html>
