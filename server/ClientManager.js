@@ -2,11 +2,11 @@ const { hri } = require("human-readable-ids");
 const Debug = require("debug");
 
 const Client = require("./Client");
-const TunnelAgent = require("./TunnelAgent");
+const Agent = require("./Agent");
 
 // Manage sets of clients
 //
-// A client is a "user session" established to service a remote localtunnel client
+// A client is a "user session" established to service a remote globaltunnel client
 class ClientManager {
   constructor(opt) {
     this.opt = opt || {};
@@ -19,7 +19,7 @@ class ClientManager {
       tunnels: 0,
     };
 
-    this.debug = Debug("lt:ClientManager");
+    this.debug = Debug("gt:ClientManager");
 
     // This is totally wrong :facepalm: this needs to be per-client...
     this.graceTimeout = null;
@@ -38,7 +38,7 @@ class ClientManager {
     }
 
     const maxSockets = this.opt.max_tcp_sockets;
-    const agent = new TunnelAgent({
+    const agent = new Agent({
       clientId: id,
       maxSockets: 10,
     });

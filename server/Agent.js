@@ -1,4 +1,4 @@
-const { Agent } = require("http");
+const { Agent: HTTPAgent } = require("http");
 const net = require("net");
 const log = require("book");
 const Debug = require("debug");
@@ -8,7 +8,7 @@ const DEFAULT_MAX_SOCKETS = 10;
 // Implements an http.Agent interface to a pool of tunnel sockets
 // A tunnel socket is a connection _from_ a client that will
 // service http requests. This agent is usable wherever one can use an http.Agent
-class TunnelAgent extends Agent {
+class Agent extends HTTPAgent {
   constructor(options = {}) {
     super({
       keepAlive: true,
@@ -24,7 +24,7 @@ class TunnelAgent extends Agent {
     // once a socket is available it is handed out to the next callback
     this.waitingCreateConn = [];
 
-    this.debug = Debug(`lt:TunnelAgent[${options.clientId}]`);
+    this.debug = Debug(`gt:Agent[${options.clientId}]`);
 
     // track maximum allowed sockets
     this.connectedSockets = 0;
@@ -175,4 +175,4 @@ class TunnelAgent extends Agent {
   }
 }
 
-module.exports = TunnelAgent;
+module.exports = Agent;

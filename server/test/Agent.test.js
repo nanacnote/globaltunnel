@@ -2,11 +2,11 @@ const http = require("http");
 const net = require("net");
 const assert = require("assert");
 
-const TunnelAgent = require("../TunnelAgent");
+const Agent = require("../Agent");
 
-describe("TunnelAgent", () => {
+describe("Agent", () => {
   it("should create an empty agent", async () => {
-    const agent = new TunnelAgent();
+    const agent = new Agent();
     assert.equal(agent.started, false);
 
     const info = await agent.listen();
@@ -15,7 +15,7 @@ describe("TunnelAgent", () => {
   });
 
   it("should create a new server and accept connections", async () => {
-    const agent = new TunnelAgent();
+    const agent = new Agent();
     assert.equal(agent.started, false);
 
     const info = await agent.listen();
@@ -42,7 +42,7 @@ describe("TunnelAgent", () => {
   });
 
   it("should reject connections over the max", async () => {
-    const agent = new TunnelAgent({
+    const agent = new Agent({
       maxTcpSockets: 2,
     });
     assert.equal(agent.started, false);
@@ -66,7 +66,7 @@ describe("TunnelAgent", () => {
   });
 
   it("should queue createConnection requests", async () => {
-    const agent = new TunnelAgent();
+    const agent = new Agent();
     assert.equal(agent.started, false);
 
     const info = await agent.listen();
@@ -97,7 +97,7 @@ describe("TunnelAgent", () => {
   });
 
   it("should should emit a online event when a socket connects", async () => {
-    const agent = new TunnelAgent();
+    const agent = new Agent();
     const info = await agent.listen();
 
     const onlinePromise = new Promise((resolve) =>
@@ -113,7 +113,7 @@ describe("TunnelAgent", () => {
   });
 
   it("should emit offline event when socket disconnects", async () => {
-    const agent = new TunnelAgent();
+    const agent = new Agent();
     const info = await agent.listen();
 
     const offlinePromise = new Promise((resolve) =>
@@ -130,7 +130,7 @@ describe("TunnelAgent", () => {
   });
 
   it("should emit offline event only when last socket disconnects", async () => {
-    const agent = new TunnelAgent();
+    const agent = new Agent();
     const info = await agent.listen();
 
     const offlinePromise = new Promise((resolve) =>
@@ -181,7 +181,7 @@ describe("TunnelAgent", () => {
   });
 
   it("should return stats", async () => {
-    const agent = new TunnelAgent();
+    const agent = new Agent();
     assert.deepEqual(agent.stats(), {
       connectedSockets: 0,
     });
