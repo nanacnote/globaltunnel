@@ -37,7 +37,7 @@ You will be assigned a URL similar to `heavy-puma-9.sub.example.com:1234`.
 
 > #### POST /api/tunnels
 >
-> Create a new tunnel. A LocalTunnel client posts to this endpoint to request a new tunnel with a specific name or a randomly assigned name.
+> Create a new tunnel. A globaltunnel client posts to this endpoint to request a new tunnel with a specific name or a randomly assigned name.
 
 > #### GET /api/status
 >
