@@ -1,6 +1,5 @@
 const { Agent } = require("http");
 const net = require("net");
-const assert = require("assert");
 const log = require("book");
 const Debug = require("debug");
 

@@ -1,4 +1,3 @@
-const log = require("book");
 const Koa = require("koa");
 const tldjs = require("tldjs");
 const Debug = require("debug");
