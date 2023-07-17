@@ -1,12 +1,12 @@
-require("localenv");
-const optimist = require("optimist");
+process.env.DEBUG = process.env.DEBUG || "globaltunnel*"; // change to * to get all debug messages or set the DEBUG env before starting the server (eg. export DEBUG=*)
 
+const optimist = require("optimist");
 const log = require("book");
 const Debug = require("debug");
 
 const CreateServer = require("./server");
 
-const debug = Debug("localtunnel");
+const debug = Debug("globaltunnel");
 
 const argv = optimist
   .usage("Usage: $0 --port [num]")
@@ -24,7 +24,7 @@ const argv = optimist
   })
   .options("domain", {
     describe:
-      "Specify the base domain name. This is optional if hosting localtunnel from a regular example.com domain. This is required if hosting a localtunnel server from a subdomain (i.e. lt.example.dom where clients will be client-app.lt.example.come)",
+      "Specify the base domain name. This is optional if hosting globaltunnel from a regular example.com domain. This is required if hosting a globaltunnel server from a subdomain (i.e. lt.example.dom where clients will be client-app.lt.example.come)",
   })
   .options("max-sockets", {
     default: 10,

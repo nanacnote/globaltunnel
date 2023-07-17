@@ -33,7 +33,7 @@ describe("Server", () => {
     await new Promise((resolve) => server.listen(resolve));
 
     const res = await request(server).get("/websocket-test");
-    const localTunnelPort = res.body.port;
+    const globaltunnelPort = res.body.port;
 
     const wss = await new Promise((resolve) => {
       const wsServer = new WebSocketServer({ port: 0 }, () => {
@@ -43,7 +43,7 @@ describe("Server", () => {
 
     const websocketServerPort = wss.address().port;
 
-    const ltSocket = net.createConnection({ port: localTunnelPort });
+    const ltSocket = net.createConnection({ port: globaltunnelPort });
     const wsSocket = net.createConnection({ port: websocketServerPort });
     ltSocket.pipe(wsSocket).pipe(ltSocket);
 

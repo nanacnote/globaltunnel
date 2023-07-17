@@ -8,7 +8,7 @@ const htmlRender = require("koa-html-render");
 
 const ClientManager = require("./ClientManager");
 
-const debug = Debug("localtunnel:server");
+const debug = Debug("globaltunnel:server");
 
 module.exports = function (opt) {
   opt = opt || {};
