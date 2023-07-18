@@ -14,6 +14,9 @@ module.exports = function (opt) {
     validHosts: opt.domain ? [opt.domain] : undefined,
   });
 
+  //  -------------------------
+  //  Initialise HTTP server
+  //  -------------------------
   const server = http.createServer();
 
   server.on("request", async (req, res) => {
@@ -107,6 +110,4 @@ module.exports = function (opt) {
   server.on("close", () => {
     clientManager.removeAll();
   });
-
-  return server;
 };
