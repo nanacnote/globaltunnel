@@ -1,12 +1,9 @@
-process.env.DEBUG = process.env.DEBUG || "globaltunnel*"; // change to * to get all debug messages or set the DEBUG env before starting the server (eg. export DEBUG=*)
+process.env.DEBUG = process.env.DEBUG || "gt*"; // change to * to get all debug messages or set the DEBUG env before starting the server (eg. export DEBUG=*)
 
 const optimist = require("optimist");
 const log = require("book");
-const Debug = require("debug");
 
-const CreateServer = require("./server");
-
-const debug = Debug("globaltunnel");
+const InitialiseHTTPServer = require("./server");
 
 const argv = optimist
   .usage("Usage: $0 --port [num]")
@@ -26,7 +23,7 @@ const argv = optimist
     describe:
       "Specify the base domain name. This is optional if hosting globaltunnel from a regular example.com domain. This is required if hosting a globaltunnel server from a subdomain (i.e. lt.example.dom where clients will be client-app.lt.example.come)",
   })
-  .options("max-sockets", {
+  .options("max-tcp-sockets", {
     default: 10,
     describe:
       "maximum number of tcp sockets each client is allowed to establish at one time (the tunnels)",
@@ -37,15 +34,7 @@ if (argv.help) {
   process.exit();
 }
 
-const server = CreateServer({
-  max_tcp_sockets: argv["max-sockets"],
-  secure: argv.secure,
-  domain: argv.domain,
-});
-
-server.listen(argv.port, argv.address, () => {
-  debug("server listening on port: %d", server.address().port);
-});
+InitialiseHTTPServer(argv);
 
 process.on("SIGINT", () => {
   process.exit();
