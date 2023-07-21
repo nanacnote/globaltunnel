@@ -42,3 +42,11 @@ You will be assigned a URL similar to `heavy-puma-9.sub.example.com:1234`.
 > #### GET /api/status
 >
 > General server information.
+
+notes
+/etc/host
+127.0.0.1 globaltunnel.localhost
+
+add above for dev to work
+
+use node16
