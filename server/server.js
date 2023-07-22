@@ -1,168 +1,111 @@
-const Koa = require("koa");
-const tldjs = require("tldjs");
-const Debug = require("debug");
+const debug = require("debug")("GT:Server");
+const logInfo = require("debug")("GT:Info");
+const fs = require("fs");
+const path = require("path");
 const http = require("http");
-const { hri } = require("human-readable-ids");
-const Router = require("koa-router");
-const htmlRender = require("koa-html-render");
+const url = require("url");
+const tldjs = require("tldjs");
 
 const ClientManager = require("./ClientManager");
 
-const debug = Debug("globaltunnel:server");
-
 module.exports = function (opt) {
-  opt = opt || {};
-
-  const validHosts = opt.domain ? [opt.domain] : undefined;
-  const myTldjs = tldjs.fromUserSettings({ validHosts });
-
-  function GetClientIdFromHostname(hostname) {
-    return myTldjs.getSubdomain(hostname);
-  }
-
-  const manager = new ClientManager(opt);
-
-  const schema = opt.secure ? "https" : "http";
-
-  const app = new Koa();
-  const router = new Router();
-
-  router.get("/api/status", async (ctx, next) => {
-    const stats = manager.stats;
-    ctx.body = {
-      tunnels: stats.tunnels,
-      mem: process.memoryUsage(),
-    };
-  });
-
-  router.get("/api/tunnels/:id/status", async (ctx, next) => {
-    const clientId = ctx.params.id;
-    const client = manager.getClient(clientId);
-    if (!client) {
-      ctx.throw(404);
-      return;
-    }
-
-    const stats = client.stats();
-    ctx.body = {
-      connected_sockets: stats.connectedSockets,
-    };
-  });
-
-  app.use(router.routes());
-  app.use(router.allowedMethods());
-  app.use(htmlRender("server/html"));
-
-  // root endpoint
-  app.use(async (ctx, next) => {
-    const path = ctx.request.path;
-
-    // skip anything not on the root path
-    if (path !== "/") {
-      await next();
-      return;
-    }
-
-    const isNewClientRequest = ctx.query["new"] !== undefined;
-    if (isNewClientRequest) {
-      const reqId = hri.random();
-      debug("making new client with id %s", reqId);
-      const info = await manager.newClient(reqId);
-
-      const url = schema + "://" + info.id + "." + ctx.request.host;
-      info.url = url;
-      ctx.body = info;
-      return;
-    }
-
-    // no new client request, send to landing page
-    await ctx.html("index.html");
-  });
-
-  // anything after the / path is a request for a specific client name
-  // This is a backwards compat feature
-  app.use(async (ctx, next) => {
-    const parts = ctx.request.path.split("/");
-
-    // any request with several layers of paths is not allowed
-    // rejects /foo/bar
-    // allow /foo
-    if (parts.length !== 2) {
-      await next();
-      return;
-    }
-
-    const reqId = parts[1];
-
-    // limit requested hostnames to 63 characters
-    if (!/^(?:[a-z0-9][a-z0-9\-]{4,63}[a-z0-9]|[a-z0-9]{4,63})$/.test(reqId)) {
-      const msg =
-        "Invalid subdomain. Subdomains must be lowercase and between 4 and 63 alphanumeric characters.";
-      ctx.status = 403;
-      ctx.body = {
-        message: msg,
-      };
-      return;
-    }
-
-    debug("making new client with id %s", reqId);
-    const info = await manager.newClient(reqId);
-
-    const url = schema + "://" + info.id + "." + ctx.request.host;
-    info.url = url;
-    ctx.body = info;
-    return;
+  const clientManager = new ClientManager(opt);
+  const myTldjs = tldjs.fromUserSettings({
+    validHosts: opt.domain ? [opt.domain] : undefined,
   });
 
   const server = http.createServer();
 
-  const appCallback = app.callback();
-
-  server.on("request", (req, res) => {
-    // without a hostname, we won't know who the request is for
+  server.on("request", async (req, res) => {
+    const parsedUrl = url.parse(req.url, true);
+    const route = req.url;
     const hostname = req.headers.host;
+    const subdomain = myTldjs.getSubdomain(hostname);
+    const client = clientManager.get(subdomain);
+
     if (!hostname) {
       res.statusCode = 400;
       res.end("Host header is required");
       return;
     }
 
-    const clientId = GetClientIdFromHostname(hostname);
-    if (!clientId) {
-      appCallback(req, res);
-      return;
+    if (!subdomain) {
+      switch (route) {
+        case "/api/status": {
+          debug("Serving status page");
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              tunnels: clientManager.stats.tunnels,
+              mem: process.memoryUsage(),
+            })
+          );
+          return;
+        }
+        case route.match(/^\/api\/tunnels\/[^/]+\/status$/)?.input: {
+          const segments = route.split("/");
+          const id = segments[segments.length - 2];
+          debug("Serving status page for client with id %s", id);
+          res.setHeader("Content-Type", "application/json");
+          if (clientManager.has(id)) {
+            res.writeHead(200);
+            res.end(JSON.stringify(clientManager.get(id).details));
+          } else {
+            res.writeHead(404);
+            res.end(JSON.stringify({ message: "404 Not Found" }));
+          }
+          return;
+        }
+        case route.match(/^\/\?subdomain=[^/]+$/)?.input: {
+          debug("Creating new gt client connection");
+          const client = await clientManager.create(
+            parsedUrl.query["subdomain"]
+          );
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(client));
+          return;
+        }
+        default: {
+          debug("Serving landing page");
+          res.setHeader("Content-Type", "text/html");
+          fs.readFile(
+            path.join(__dirname, "html", "index.html"),
+            "utf8",
+            (err, htmlString) => {
+              if (err) {
+                res.writeHead(500);
+                res.end("Error reading HTML file");
+              } else {
+                res.writeHead(200);
+                res.end(htmlString);
+              }
+            }
+          );
+          return;
+        }
+      }
     }
-
-    const client = manager.getClient(clientId);
     if (!client) {
       res.statusCode = 404;
-      res.end("404");
+      res.end(`No clients associated with ${subdomain}`);
       return;
     }
-
-    client.handleRequest(req, res);
+    const chunks = [];
+    req.on("data", (chunk) => {
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      const body = Buffer.concat(chunks);
+      client.handleUserSubdomainRequest(req, res, body);
+    });
   });
 
-  server.on("upgrade", (req, socket, head) => {
-    const hostname = req.headers.host;
-    if (!hostname) {
-      socket.destroy();
-      return;
-    }
+  server.listen(opt.port, () => {
+    logInfo("server listening on port: %s", server.address().port);
+  });
 
-    const clientId = GetClientIdFromHostname(hostname);
-    if (!clientId) {
-      socket.destroy();
-      return;
-    }
-
-    const client = manager.getClient(clientId);
-    if (!client) {
-      socket.destroy();
-      return;
-    }
-
-    client.handleUpgrade(req, socket);
+  server.on("close", () => {
+    clientManager.removeAll();
   });
 
   return server;
