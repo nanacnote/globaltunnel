@@ -1,132 +1,182 @@
-const http = require("http");
-const Debug = require("debug");
-const pump = require("pump");
+const debug = require("debug")("GT:Client");
+const logError = require("debug")("GT:Error");
 const EventEmitter = require("events");
+const http = require("http");
+const Queue = require("mnemonist/queue");
+const crypto = require("crypto");
 
-// A client encapsulates req/res handling using an agent
-//
-// If an agent is destroyed, the request handling will error
-// The caller is responsible for handling a failed request
-class Client extends EventEmitter {
-  constructor(options) {
+const EOB_TOKEN = "!!!";
+
+module.exports = class Client extends EventEmitter {
+  constructor(opt, subdomain) {
     super();
+    this.opt = opt;
+    this.subdomain = subdomain;
+    this.bufferedData = "";
+    this.isActive = false;
+    this.socket = undefined;
+    this.websocketServer = undefined;
+    this.userRequests = new Queue();
+    this.responseSubscribers = new Map();
+    this.details = {};
 
-    const agent = (this.agent = options.agent);
-    const id = (this.id = options.id);
-
-    this.debug = Debug(`gt:Client[${this.id}]`);
-
-    // client is given a grace period in which they can connect before they are _removed_
-    this.graceTimeout = setTimeout(() => {
-      this.close();
-    }, 1000).unref();
-
-    agent.on("online", () => {
-      this.debug("client online %s", id);
-      clearTimeout(this.graceTimeout);
-    });
-
-    agent.on("offline", () => {
-      this.debug("client offline %s", id);
-
-      // if there was a previous timeout set, we don't want to double trigger
-      clearTimeout(this.graceTimeout);
-
-      // client is given a grace period in which they can re-connect before they are _removed_
-      this.graceTimeout = setTimeout(() => {
-        this.close();
-      }, 1000).unref();
-    });
-
-    // TODO(roman): an agent error removes the client, the user needs to re-connect?
-    // how does a user realize they need to re-connect vs some random client being assigned same port?
-    agent.once("error", (err) => {
-      this.close();
-    });
-  }
-
-  stats() {
-    return this.agent.stats();
+    this.handleUpgradeHttpToWebSocket =
+      this.handleUpgradeHttpToWebSocket.bind(this);
+    this.triggerUserRequestProcessing =
+      this._triggerUserRequestProcessing().bind(this);
   }
 
   close() {
-    clearTimeout(this.graceTimeout);
-    this.agent.destroy();
-    this.emit("close");
+    // TODO: do a comprehensive error check
+    // TODO: there may be a memory leak here where closed servers are not garbage collected
+    // possible solution is to have a fix set of ports to choose from
+    return new Promise((resolve) => {
+      debug(
+        "Closing client (%s) connected to port %d",
+        this.subdomain,
+        this.websocketServer.address().port
+      );
+      this.websocketServer.close();
+      resolve();
+    });
   }
 
-  handleRequest(req, res) {
-    this.debug("> %s", req.url);
-    const opt = {
-      path: req.url,
-      agent: this.agent,
-      method: req.method,
-      headers: req.headers,
+  createWebSocket() {
+    return new Promise((resolve, reject) => {
+      try {
+        this.websocketServer = http.createServer();
+        this.websocketServer.on("upgrade", this.handleUpgradeHttpToWebSocket);
+        this.websocketServer.listen(() => {
+          const webSocketPort = this.websocketServer.address().port;
+          debug(
+            "Started websocket server for subdomain (%s) listening on port %d",
+            this.subdomain,
+            webSocketPort
+          );
+          this.details = {
+            assignedSubdomain: this.subdomain,
+            assignedHttpURL: `http://${this.subdomain}.${this.opt.domain}:${this.opt.port}`,
+            assignedWebSocketURL: `ws://${this.subdomain}.${this.opt.domain}:${webSocketPort}`,
+            webSocketRequestOptions: {
+              port: webSocketPort,
+              host: `${this.subdomain}.${this.opt.domain}`,
+              headers: {
+                Connection: "Upgrade",
+                Upgrade: "websocket",
+                "Sec-WebSocket-Version": "13",
+                "Sec-WebSocket-Key": Buffer.from(
+                  crypto.randomBytes(16)
+                ).toString("base64"),
+              },
+            },
+          };
+          resolve(this.details);
+        });
+      } catch (error) {
+        debug(
+          "Something went wrong while starting websocketServer for %s",
+          this.subdomain
+        );
+        reject({ message: error.message });
+      }
+    });
+  }
+
+  handleUpgradeHttpToWebSocket(req, socket, head) {
+    const headers =
+      [
+        "HTTP/1.1 101 Web Socket Protocol Handshake",
+        "Upgrade: WebSocket",
+        "Connection: Upgrade",
+        `Sec-WebSocket-Accept: ${this._generateWebSocketAccept(
+          req.headers["sec-websocket-key"]
+        )}`,
+        "",
+      ].join("\r\n") + "\r\n";
+    socket.write(headers);
+    socket.on("data", (data) => {
+      this.bufferedData += data.toString();
+      const eobTokenIndex = this.bufferedData.indexOf(EOB_TOKEN);
+      if (eobTokenIndex !== -1) {
+        const extractedBuffer = this.bufferedData.slice(0, eobTokenIndex);
+        const remainingBuffer = this.bufferedData.slice(
+          eobTokenIndex + EOB_TOKEN.length
+        );
+        this.bufferedData = remainingBuffer;
+        const parsedData = JSON.parse(extractedBuffer);
+        if (this.responseSubscribers.has(parsedData.responseLookupID)) {
+          const res = this.responseSubscribers.get(parsedData.responseLookupID);
+          this.responseSubscribers.delete(parsedData.responseLookupID);
+          Object.entries(parsedData.headers).forEach(([key, value]) => {
+            res.setHeader(key, value);
+          });
+          res.write(Buffer.from(parsedData.body.data));
+          res.end();
+        } else {
+          logError(
+            "Not user response object was found for the lookup ID: %s",
+            parsedData.responseLookupID
+          );
+        }
+      }
+    });
+    socket.on("end", () => {
+      this.emit("close", this.subdomain);
+    });
+    this.isActive = true;
+    this.socket = socket;
+  }
+
+  handleUserSubdomainRequest(req, res, body) {
+    debug("User incoming request added to client queue: %s", req.url);
+    const responseLookupID = crypto
+      .randomBytes(Math.ceil(16 / 2))
+      .toString("hex")
+      .slice(0, 16);
+    this.responseSubscribers.set(responseLookupID, res);
+    // console.log(
+    //   `${req.method} ${req.url} HTTP/${
+    //     req.httpVersion
+    //   }\r\n${req.rawHeaders.join("\r\n")}\r\n\r\n`
+    // );
+    this.userRequests.enqueue({ req, body, responseLookupID });
+    this.triggerUserRequestProcessing();
+  }
+
+  _triggerUserRequestProcessing() {
+    let block = false;
+    return () => {
+      if (block) return;
+      block = true;
+      while (this.userRequests.size) {
+        const { req, body, responseLookupID } = this.userRequests.dequeue();
+        this.socket.cork();
+        this.socket.write(
+          JSON.stringify({
+            req: {
+              method: req.method,
+              url: req.url,
+              headers: req.headers,
+            },
+            body,
+            responseLookupID,
+          }) + EOB_TOKEN
+        );
+        this.socket.uncork();
+      }
+      block = false;
     };
-
-    const clientReq = http.request(opt, (clientRes) => {
-      this.debug("< %s", req.url);
-      // write response code and headers
-      res.writeHead(clientRes.statusCode, clientRes.headers);
-
-      // using pump is deliberate - see the pump docs for why
-      pump(clientRes, res);
-    });
-
-    // this can happen when underlying agent produces an error
-    // in our case we 504 gateway error this?
-    // if we have already sent headers?
-    clientReq.once("error", (err) => {
-      // TODO(roman): if headers not sent - respond with gateway unavailable
-    });
-
-    // using pump is deliberate - see the pump docs for why
-    pump(req, clientReq);
   }
 
-  handleUpgrade(req, socket) {
-    this.debug("> [up] %s", req.url);
-    socket.once("error", (err) => {
-      // These client side errors can happen if the client dies while we are reading
-      // We don't need to surface these in our logs.
-      if (err.code == "ECONNRESET" || err.code == "ETIMEDOUT") {
-        return;
-      }
-      console.error(err);
-    });
-
-    this.agent.createConnection({}, (err, conn) => {
-      this.debug("< [up] %s", req.url);
-      // any errors getting a connection mean we cannot service this request
-      if (err) {
-        socket.end();
-        return;
-      }
-
-      // socket met have disconnected while we waiting for a socket
-      if (!socket.readable || !socket.writable) {
-        conn.destroy();
-        socket.end();
-        return;
-      }
-
-      // websocket requests are special in that we simply re-create the header info
-      // then directly pipe the socket data
-      // avoids having to rebuild the request and handle upgrades via the http client
-      const arr = [`${req.method} ${req.url} HTTP/${req.httpVersion}`];
-      for (let i = 0; i < req.rawHeaders.length - 1; i += 2) {
-        arr.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
-      }
-
-      arr.push("");
-      arr.push("");
-
-      // using pump is deliberate - see the pump docs for why
-      pump(conn, socket);
-      pump(socket, conn);
-      conn.write(arr.join("\r\n"));
-    });
+  _generateWebSocketAccept(webSocketKey) {
+    if (webSocketKey) {
+      const magicString = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+      const concatenatedKey = webSocketKey + magicString;
+      const sha1 = crypto.createHash("sha1");
+      sha1.update(concatenatedKey);
+      return sha1.digest("base64");
+    } else {
+      return "";
+    }
   }
-}
-
-module.exports = Client;
+};

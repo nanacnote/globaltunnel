@@ -1,95 +1,74 @@
+const debug = require("debug")("GT:ClientManager");
 const { hri } = require("human-readable-ids");
-const Debug = require("debug");
 
 const Client = require("./Client");
-const Agent = require("./Agent");
 
-// Manage sets of clients
-//
-// A client is a "user session" established to service a remote globaltunnel client
-class ClientManager {
+module.exports = class ClientManager {
   constructor(opt) {
-    this.opt = opt || {};
-
-    // id -> client instance
+    this.opt = opt;
     this.clients = new Map();
 
-    // statistics
-    this.stats = {
-      tunnels: 0,
+    this.remove = this.remove.bind(this);
+  }
+
+  get stats() {
+    return {
+      tunnels: this.clients.size,
     };
-
-    this.debug = Debug("gt:ClientManager");
-
-    // This is totally wrong :facepalm: this needs to be per-client...
-    this.graceTimeout = null;
   }
 
-  // create a new tunnel with `id`
-  // if the id is already used, a random id is assigned
-  // if the tunnel could not be created, throws an error
-  async newClient(id) {
-    const clients = this.clients;
-    const stats = this.stats;
+  has(subdomain) {
+    return this.clients.has(subdomain);
+  }
 
-    // can't ask for id already is use
-    if (clients[id]) {
-      id = hri.random();
-    }
+  get(subdomain) {
+    return this.clients.get(subdomain);
+  }
 
-    const maxSockets = this.opt.max_tcp_sockets;
-    const agent = new Agent({
-      clientId: id,
-      maxSockets: 10,
-    });
-
-    const client = new Client({
-      id,
-      agent,
-    });
-
-    // add to clients map immediately
-    // avoiding races with other clients requesting same id
-    clients[id] = client;
-
-    client.once("close", () => {
-      this.removeClient(id);
-    });
-
-    // try/catch used here to remove client id
-    try {
-      const info = await agent.listen();
-      ++stats.tunnels;
-      return {
-        id: id,
-        port: info.port,
-        max_conn_count: maxSockets,
-      };
-    } catch (err) {
-      this.removeClient(id);
-      // rethrow error for upstream to handle
-      throw err;
+  remove(subdomain) {
+    if (this.clients.has(subdomain)) {
+      this.clients
+        .get(subdomain)
+        .close()
+        .then(() => {
+          this.clients.delete(subdomain);
+        });
     }
   }
 
-  removeClient(id) {
-    this.debug("removing client: %s", id);
-    const client = this.clients[id];
-    if (!client) {
-      return;
-    }
-    --this.stats.tunnels;
-    delete this.clients[id];
-    client.close();
+  removeAll() {
+    const clientList = Array.from(this.clients);
+    Promise.all(clientList.map(([, client]) => client.close())).then(() => {
+      this.clients.clear();
+    });
   }
 
-  hasClient(id) {
-    return !!this.clients[id];
+  create(subdomain) {
+    return new Promise((resolve, reject) => {
+      const assignedSubdomain = this.clients.has(subdomain)
+        ? hri.random()
+        : subdomain;
+      const client = new Client(this.opt, assignedSubdomain);
+      client.on("close", this.remove);
+      client
+        .createWebSocket()
+        .then((details) => {
+          this.clients.set(assignedSubdomain, client);
+          ++this.stats.tunnels;
+          resolve(details);
+        })
+        .catch(reject)
+        .finally(() => {
+          setTimeout(() => {
+            if (!client.isActive) {
+              debug(
+                "Client assigned with subdomain %s did not connect in time",
+                assignedSubdomain
+              );
+              this.remove(assignedSubdomain);
+            }
+          }, 5000);
+        });
+    });
   }
-
-  getClient(id) {
-    return this.clients[id];
-  }
-}
-
-module.exports = ClientManager;
+};
