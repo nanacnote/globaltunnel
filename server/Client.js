@@ -6,60 +6,62 @@ const Queue = require("mnemonist/queue");
 const crypto = require("crypto");
 
 const EOB_TOKEN = "!!!";
+const FREE_WS_SERVER_TIMEOUT = 5000;
 
-module.exports = class Client extends EventEmitter {
-  constructor(opt, subdomain) {
+class Client extends EventEmitter {
+  constructor(argv, subdomain) {
     super();
-    this.opt = opt;
+    this.argv = argv;
     this.subdomain = subdomain;
     this.bufferedData = "";
     this.isActive = false;
     this.socket = undefined;
     this.websocketServer = undefined;
-    this.userRequests = new Queue();
-    this.responseSubscribers = new Map();
+    this.incomingRequests = new Queue();
+    this.responseLookup = new Queue();
     this.details = {};
 
-    this.handleUpgradeHttpToWebSocket =
-      this.handleUpgradeHttpToWebSocket.bind(this);
-    this.triggerUserRequestProcessing =
-      this._triggerUserRequestProcessing().bind(this);
+    this.upgradeHttpToWebSocket = this._upgradeHttpToWebSocket.bind(this);
+    this.triggerResponseProcessing = this._triggerResponseProcessing.bind(this);
+    this.triggerRequestProcessing = this._triggerRequestProcessing().bind(this);
   }
 
   close() {
-    // TODO: do a comprehensive error check
-    // TODO: there may be a memory leak here where closed servers are not garbage collected
-    // possible solution is to have a fix set of ports to choose from
     return new Promise((resolve) => {
       debug(
-        "Closing client (%s) connected to port %d",
+        "Closing client: %s connected to port: %d",
         this.subdomain,
         this.websocketServer.address().port
       );
-      this.websocketServer.close();
-      resolve();
+      setTimeout(() => {
+        this.socket.destroy();
+        this.websocketServer.close((err) => {
+          if (err) logError(err);
+          resolve();
+        });
+      }, FREE_WS_SERVER_TIMEOUT);
     });
   }
 
-  createWebSocket() {
+  initialise() {
     return new Promise((resolve, reject) => {
       try {
         this.websocketServer = http.createServer();
-        this.websocketServer.on("upgrade", this.handleUpgradeHttpToWebSocket);
+        this.websocketServer.on("upgrade", this.upgradeHttpToWebSocket);
         this.websocketServer.listen(() => {
           const webSocketPort = this.websocketServer.address().port;
           debug(
-            "Started websocket server for subdomain (%s) listening on port %d",
+            "Started websocket server for subdomain: %s listening on port: %d",
             this.subdomain,
             webSocketPort
           );
           this.details = {
             assignedSubdomain: this.subdomain,
-            assignedHttpURL: `http://${this.subdomain}.${this.opt.domain}:${this.opt.port}`,
-            assignedWebSocketURL: `ws://${this.subdomain}.${this.opt.domain}:${webSocketPort}`,
+            assignedHttpURL: `http://${this.subdomain}.${this.argv.domain}:${this.argv.port}`,
+            assignedWebSocketURL: `ws://${this.subdomain}.${this.argv.domain}:${webSocketPort}`,
             webSocketRequestOptions: {
               port: webSocketPort,
-              host: `${this.subdomain}.${this.opt.domain}`,
+              host: `${this.subdomain}.${this.argv.domain}`,
               headers: {
                 Connection: "Upgrade",
                 Upgrade: "websocket",
@@ -74,7 +76,7 @@ module.exports = class Client extends EventEmitter {
         });
       } catch (error) {
         debug(
-          "Something went wrong while starting websocketServer for %s",
+          "Something went wrong while starting websocketServer for: %s",
           this.subdomain
         );
         reject({ message: error.message });
@@ -82,7 +84,18 @@ module.exports = class Client extends EventEmitter {
     });
   }
 
-  handleUpgradeHttpToWebSocket(req, socket, head) {
+  pipe(req, res, body) {
+    debug("User incoming request added to client queue: %s", req.url);
+    const responseLookupID = crypto
+      .randomBytes(Math.ceil(16 / 2))
+      .toString("hex")
+      .slice(0, 16);
+    this.responseLookup.enqueue({ res, responseLookupID });
+    this.incomingRequests.enqueue({ req, body, responseLookupID });
+    this.triggerRequestProcessing();
+  }
+
+  _upgradeHttpToWebSocket(req, socket, head) {
     const headers =
       [
         "HTTP/1.1 101 Web Socket Protocol Handshake",
@@ -103,54 +116,23 @@ module.exports = class Client extends EventEmitter {
           eobTokenIndex + EOB_TOKEN.length
         );
         this.bufferedData = remainingBuffer;
-        const parsedData = JSON.parse(extractedBuffer);
-        if (this.responseSubscribers.has(parsedData.responseLookupID)) {
-          const res = this.responseSubscribers.get(parsedData.responseLookupID);
-          this.responseSubscribers.delete(parsedData.responseLookupID);
-          Object.entries(parsedData.headers).forEach(([key, value]) => {
-            res.setHeader(key, value);
-          });
-          res.write(Buffer.from(parsedData.body.data));
-          res.end();
-        } else {
-          logError(
-            "Not user response object was found for the lookup ID: %s",
-            parsedData.responseLookupID
-          );
-        }
+        this.triggerResponseProcessing(JSON.parse(extractedBuffer));
       }
     });
-    socket.on("end", () => {
+    socket.once("end", () => {
       this.emit("close", this.subdomain);
     });
     this.isActive = true;
     this.socket = socket;
   }
 
-  handleUserSubdomainRequest(req, res, body) {
-    debug("User incoming request added to client queue: %s", req.url);
-    const responseLookupID = crypto
-      .randomBytes(Math.ceil(16 / 2))
-      .toString("hex")
-      .slice(0, 16);
-    this.responseSubscribers.set(responseLookupID, res);
-    // console.log(
-    //   `${req.method} ${req.url} HTTP/${
-    //     req.httpVersion
-    //   }\r\n${req.rawHeaders.join("\r\n")}\r\n\r\n`
-    // );
-    this.userRequests.enqueue({ req, body, responseLookupID });
-    this.triggerUserRequestProcessing();
-  }
-
-  _triggerUserRequestProcessing() {
+  _triggerRequestProcessing() {
     let block = false;
     return () => {
       if (block) return;
       block = true;
-      while (this.userRequests.size) {
-        const { req, body, responseLookupID } = this.userRequests.dequeue();
-        this.socket.cork();
+      while (this.incomingRequests.size) {
+        const { req, body, responseLookupID } = this.incomingRequests.dequeue();
         this.socket.write(
           JSON.stringify({
             req: {
@@ -162,10 +144,33 @@ module.exports = class Client extends EventEmitter {
             responseLookupID,
           }) + EOB_TOKEN
         );
-        this.socket.uncork();
       }
       block = false;
     };
+  }
+
+  _triggerResponseProcessing(parsedData) {
+    if (
+      this.responseLookup.peek()?.responseLookupID ===
+      parsedData.responseLookupID
+    ) {
+      const { res } = this.responseLookup.dequeue();
+      Object.entries(parsedData.headers).forEach(([key, value]) => {
+        res.setHeader(key, value);
+      });
+      res.write(Buffer.from(parsedData.body.data));
+      res.end();
+    } else {
+      /// -----------------
+      setTimeout(() => {
+        this.triggerRequestProcessing(parsedData);
+      }, 2000);
+      /// -----------------
+      logError(
+        "No response object was found for the lookup ID: %s",
+        parsedData.responseLookupID
+      );
+    }
   }
 
   _generateWebSocketAccept(webSocketKey) {
@@ -179,4 +184,6 @@ module.exports = class Client extends EventEmitter {
       return "";
     }
   }
-};
+}
+
+module.exports = Client;
