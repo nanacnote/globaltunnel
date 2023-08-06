@@ -88,7 +88,7 @@ class BufferManager extends EventEmitter {
   }
 }
 
-function pipeRequestToLocalServer(argv, socket, incomingPayload) {
+function pipeRequestToLocalhost(argv, socket, incomingPayload) {
   new HttpRequestManager(argv, {
     hostname: "localhost",
     port: argv.port,
@@ -106,6 +106,11 @@ function pipeRequestToLocalServer(argv, socket, incomingPayload) {
           responseLookupID: incomingPayload.responseLookupID,
         }) + EOB_TOKEN
       );
+    })
+    .catch((err) => {
+      logError("Piping incoming request to localhost failed");
+      logError(err);
+      process.kill(process.pid, "SIGTERM");
     });
 }
 
@@ -115,8 +120,11 @@ function connectToWebSocket(argv, details) {
     req.on("upgrade", (res, socket, head) => {
       logInfo(`Tunnel is ready @ -> ${details.assignedHttpURL}`);
       const bufferManager = new BufferManager(argv, socket);
-      bufferManager.on("ready", pipeRequestToLocalServer);
+      bufferManager.on("ready", pipeRequestToLocalhost);
       socket.on("data", bufferManager.add);
+      socket.on("close", () => {
+        process.kill(process.pid, "SIGTERM");
+      });
       resolve(socket);
     });
     req.on("error", reject);
@@ -134,7 +142,7 @@ function requestSocketCredentials(argv) {
       .then(({ headers, body }) => connectToWebSocket(argv, body))
       .then(resolve)
       .catch((err) => {
-        logError("Failed to establish connection to websocket");
+        logError("Connection to websocket failed");
         reject(err);
       });
   });
