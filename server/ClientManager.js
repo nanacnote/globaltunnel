@@ -3,9 +3,11 @@ const { hri } = require("human-readable-ids");
 
 const Client = require("./Client");
 
-module.exports = class ClientManager {
-  constructor(opt) {
-    this.opt = opt;
+const SOCKET_UPGRADE_TIMEOUT = 5000;
+
+class ClientManager {
+  constructor(argv) {
+    this.argv = argv;
     this.clients = new Map();
 
     this.remove = this.remove.bind(this);
@@ -31,6 +33,7 @@ module.exports = class ClientManager {
         .get(subdomain)
         .close()
         .then(() => {
+          debug("Client: %s closed and removed successfully", subdomain);
           this.clients.delete(subdomain);
         });
     }
@@ -43,15 +46,15 @@ module.exports = class ClientManager {
     });
   }
 
-  create(subdomain) {
+  add(subdomain) {
     return new Promise((resolve, reject) => {
       const assignedSubdomain = this.clients.has(subdomain)
         ? hri.random()
         : subdomain;
-      const client = new Client(this.opt, assignedSubdomain);
-      client.on("close", this.remove);
+      const client = new Client(this.argv, assignedSubdomain);
+      client.once("close", this.remove);
       client
-        .createWebSocket()
+        .initialise()
         .then((details) => {
           this.clients.set(assignedSubdomain, client);
           ++this.stats.tunnels;
@@ -62,13 +65,15 @@ module.exports = class ClientManager {
           setTimeout(() => {
             if (!client.isActive) {
               debug(
-                "Client assigned with subdomain %s did not connect in time",
+                "Client with subdomain: %s failed to connect within the expected time frame",
                 assignedSubdomain
               );
               this.remove(assignedSubdomain);
             }
-          }, 5000);
+          }, SOCKET_UPGRADE_TIMEOUT);
         });
     });
   }
-};
+}
+
+module.exports = ClientManager;
