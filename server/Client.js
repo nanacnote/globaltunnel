@@ -5,6 +5,8 @@ const http = require("http");
 const Queue = require("mnemonist/queue");
 const crypto = require("crypto");
 
+const __rawSOC__ = require("../socket");
+
 const EOB_TOKEN = "!!!";
 const FREE_WS_SERVER_TIMEOUT = 5000;
 
@@ -24,23 +26,6 @@ class Client extends EventEmitter {
     this.upgradeHttpToWebSocket = this._upgradeHttpToWebSocket.bind(this);
     this.triggerResponseProcessing = this._triggerResponseProcessing.bind(this);
     this.triggerRequestProcessing = this._triggerRequestProcessing().bind(this);
-  }
-
-  close() {
-    return new Promise((resolve) => {
-      debug(
-        "Closing client: %s connected to port: %d",
-        this.subdomain,
-        this.websocketServer.address().port
-      );
-      setTimeout(() => {
-        this.socket.destroy();
-        this.websocketServer.close((err) => {
-          if (err) logError(err);
-          resolve();
-        });
-      }, FREE_WS_SERVER_TIMEOUT);
-    });
   }
 
   initialise() {
@@ -84,6 +69,23 @@ class Client extends EventEmitter {
     });
   }
 
+  close() {
+    return new Promise((resolve) => {
+      debug(
+        "Closing client: %s connected to port: %d",
+        this.subdomain,
+        this.websocketServer.address().port
+      );
+      setTimeout(() => {
+        this.socket.destroy();
+        this.websocketServer.close((err) => {
+          if (err) logError(err);
+          resolve();
+        });
+      }, FREE_WS_SERVER_TIMEOUT);
+    });
+  }
+
   pipe(req, res, body) {
     debug("User incoming request added to client queue: %s", req.url);
     const responseLookupID = crypto
@@ -108,6 +110,9 @@ class Client extends EventEmitter {
       ].join("\r\n") + "\r\n";
     socket.write(headers);
     socket.on("data", (data) => {
+      // TODO: HERE <--------------
+      __rawSOC__(data, socket);
+      // TODO: HERE <--------------
       this.bufferedData += data.toString();
       const eobTokenIndex = this.bufferedData.indexOf(EOB_TOKEN);
       if (eobTokenIndex !== -1) {
